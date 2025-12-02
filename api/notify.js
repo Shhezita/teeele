@@ -9,8 +9,15 @@ const CONFIG = {
 if (!CONFIG.TOKEN) throw new Error("TELEGRAM_BOT_TOKEN is missing");
 
 const redis = new Redis(CONFIG.REDIS_URL, {
-    retryStrategy: (times) => Math.min(times * 50, 2000)
+    retryStrategy: (times) => Math.min(times * 50, 2000),
+    maxRetriesPerRequest: 3,
+    connectTimeout: 10000,
+    lazyConnect: true,
+    family: 0
 });
+
+redis.on('error', (err) => console.error('[REDIS] Error:', err));
+redis.on('connect', () => console.log('[REDIS] Connected'));
 
 const Helpers = {
     getChatId: async (userId) => await redis.get(`telegram_user:${userId}`),
