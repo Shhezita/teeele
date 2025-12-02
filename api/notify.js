@@ -1,4 +1,3 @@
-const TelegramBot = require('node-telegram-bot-api');
 const Redis = require('ioredis');
 
 const CONFIG = {
@@ -9,13 +8,33 @@ const CONFIG = {
 
 if (!CONFIG.TOKEN) throw new Error("TELEGRAM_BOT_TOKEN is missing");
 
-const bot = new TelegramBot(CONFIG.TOKEN, { polling: false });
 const redis = new Redis(CONFIG.REDIS_URL, {
     retryStrategy: (times) => Math.min(times * 50, 2000)
 });
 
 const Helpers = {
-    getChatId: async (userId) => await redis.get(`telegram_user:${userId}`)
+    getChatId: async (userId) => await redis.get(`telegram_user:${userId}`),
+    sendMessage: async (chatId, text, options = {}) => {
+        const url = `https://api.telegram.org/bot${CONFIG.TOKEN}/sendMessage`;
+        const body = {
+            chat_id: chatId,
+            text: text,
+            parse_mode: 'Markdown',
+            ...options
+        };
+
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+
+        const data = await response.json();
+        if (!data.ok) {
+            throw new Error(`Telegram API Error: ${data.description}`);
+        }
+        return data;
+    }
 };
 
 // ==========================================
@@ -24,16 +43,11 @@ const Helpers = {
 module.exports = async (req, res) => {
     console.log("[NOTIFY] Hit received!");
 
-    // Basic Auth (Optional but recommended: check a secret header)
-    // if (req.headers['x-bot-secret'] !== process.env.BOT_SECRET) return res.status(401).send('Unauthorized');
-
     try {
         const { userId, text, chatId: payloadChatId } = req.body;
         console.log(`[NOTIFY] Body: userId=${userId}, text=${text ? text.substring(0, 50) : 'null'}`);
 
         if (!userId || !text) return res.status(400).json({ error: "Missing userId or text" });
-
-        console.log(`[BOT] Received Notification for User ${userId}`);
 
         // Lookup Chat ID
         const chatId = payloadChatId || await Helpers.getChatId(userId);
@@ -66,11 +80,11 @@ module.exports = async (req, res) => {
                 replyMarkup = { inline_keyboard: [[{ text: "🛡️ Reply to Guild (5 min)", callback_data: `reply_context:${contextId}` }]] };
             }
 
-            const options = { parse_mode: 'Markdown' };
+            const options = {};
             if (replyMarkup) options.reply_markup = replyMarkup;
 
-            console.log(`[NOTIFY] Sending message to ${chatId}...`);
-            await bot.sendMessage(chatId, formattedText, options);
+            console.log(`[NOTIFY] Sending message to ${chatId} via fetch...`);
+            await Helpers.sendMessage(chatId, formattedText, options);
             console.log(`[NOTIFY] Sent successfully to User ${userId}`);
 
             res.json({ success: true });
