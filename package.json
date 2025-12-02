@@ -1,0 +1,9 @@
+{
+  "name": "vercel-telegram-bot",
+  "version": "1.0.0",
+  "dependencies": {
+    "node-telegram-bot-api": "^0.61.0",
+    "ioredis": "^5.3.0",
+    "dotenv": "^16.0.0"
+  }
+}
