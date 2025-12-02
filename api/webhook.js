@@ -1,4 +1,3 @@
-const TelegramBot = require('node-telegram-bot-api');
 const Redis = require('ioredis');
 
 // ==========================================
@@ -13,16 +12,61 @@ const CONFIG = {
 
 if (!CONFIG.TOKEN) throw new Error("TELEGRAM_BOT_TOKEN is missing");
 
-// Initialize Bot (No Polling for Serverless)
-const bot = new TelegramBot(CONFIG.TOKEN, { polling: false });
-
 // Initialize Redis
 const redis = new Redis(CONFIG.REDIS_URL, {
     retryStrategy: (times) => Math.min(times * 50, 2000)
 });
 
+redis.on('error', (err) => console.error('[REDIS] Error:', err));
+redis.on('connect', () => console.log('[REDIS] Connected'));
+
 // ==========================================
-//  UI & TEXT ASSETS (Copied from original)
+//  TELEGRAM API HELPER (Native Fetch)
+// ==========================================
+const Telegram = {
+    call: async (method, body) => {
+        const url = `https://api.telegram.org/bot${CONFIG.TOKEN}/${method}`;
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            const data = await response.json();
+            if (!data.ok) {
+                console.error(`[TELEGRAM] Error calling ${method}:`, data.description);
+            }
+            return data;
+        } catch (e) {
+            console.error(`[TELEGRAM] Network Error calling ${method}:`, e);
+            return null;
+        }
+    },
+    sendMessage: async (chatId, text, options = {}) => {
+        return await Telegram.call('sendMessage', {
+            chat_id: chatId,
+            text: text,
+            parse_mode: 'Markdown',
+            ...options
+        });
+    },
+    answerCallbackQuery: async (callbackQueryId, text = null) => {
+        return await Telegram.call('answerCallbackQuery', {
+            callback_query_id: callbackQueryId,
+            text: text
+        });
+    },
+    editMessageReplyMarkup: async (chatId, messageId, replyMarkup) => {
+        return await Telegram.call('editMessageReplyMarkup', {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: replyMarkup
+        });
+    }
+};
+
+// ==========================================
+//  UI & TEXT ASSETS
 // ==========================================
 const UI = {
     welcome: (name) => `
@@ -82,19 +126,15 @@ You had 5 minutes to reply. Please wait for a new message.
 
 const Keyboards = {
     mainMenu: {
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: "❓ Help", callback_data: "help" }, { text: "📡 Status", callback_data: "status" }]
-            ]
-        }
+        inline_keyboard: [
+            [{ text: "❓ Help", callback_data: "help" }, { text: "📡 Status", callback_data: "status" }]
+        ]
     },
     linkedMenu: {
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: "📡 Status", callback_data: "status" }, { text: "❌ Disconnect", callback_data: "disconnect" }],
-                [{ text: "❓ Help", callback_data: "help" }]
-            ]
-        }
+        inline_keyboard: [
+            [{ text: "📡 Status", callback_data: "status" }, { text: "❌ Disconnect", callback_data: "disconnect" }],
+            [{ text: "❓ Help", callback_data: "help" }]
+        ]
     }
 };
 
@@ -119,7 +159,7 @@ const Actions = {
         try {
             const userDataString = await redis.get(`telegram_token:${linkId}`);
             if (!userDataString) {
-                return bot.sendMessage(chatId, "❌ **Invalid or Expired Token.**\nPlease generate a new one in-game.", { parse_mode: 'Markdown' });
+                return Telegram.sendMessage(chatId, "❌ **Invalid or Expired Token.**\nPlease generate a new one in-game.");
             }
 
             let userData;
@@ -131,10 +171,10 @@ const Actions = {
             if (serverId) await redis.hset(`telegram_metadata:${userId}`, 'server', serverId);
             await redis.del(`telegram_token:${linkId}`);
 
-            bot.sendMessage(chatId, UI.linked(userId, serverId), { parse_mode: 'Markdown', ...Keyboards.linkedMenu });
+            Telegram.sendMessage(chatId, UI.linked(userId, serverId), { reply_markup: Keyboards.linkedMenu });
         } catch (error) {
             console.error("[LINK] Error:", error);
-            bot.sendMessage(chatId, "⚠️ System Error. Please try again.");
+            Telegram.sendMessage(chatId, "⚠️ System Error. Please try again.");
         }
     },
 
@@ -143,24 +183,24 @@ const Actions = {
         if (userId) {
             await redis.del(`telegram_chat:${chatId}`);
             await redis.del(`telegram_user:${userId}`);
-            bot.sendMessage(chatId, "🔌 **Disconnected Successfully.**", { parse_mode: 'Markdown', ...Keyboards.mainMenu });
+            Telegram.sendMessage(chatId, "🔌 **Disconnected Successfully.**", { reply_markup: Keyboards.mainMenu });
         } else {
-            bot.sendMessage(chatId, "⚠️ You are not connected.", { parse_mode: 'Markdown' });
+            Telegram.sendMessage(chatId, "⚠️ You are not connected.");
         }
     },
 
     sendReply: async (chatId, to, content) => {
         const userId = await Helpers.getUserId(chatId);
-        if (!userId) return bot.sendMessage(chatId, UI.notLinked, { parse_mode: 'Markdown' });
+        if (!userId) return Telegram.sendMessage(chatId, UI.notLinked);
         await Helpers.queueReply(userId, { to, content });
-        bot.sendMessage(chatId, `📤 **Message Sent**\nTo: \`${to}\`\n"${content}"`, { parse_mode: 'Markdown' });
+        Telegram.sendMessage(chatId, `📤 **Message Sent**\nTo: \`${to}\`\n"${content}"`);
     },
 
     sendGuildMessage: async (chatId, content) => {
         const userId = await Helpers.getUserId(chatId);
-        if (!userId) return bot.sendMessage(chatId, UI.notLinked, { parse_mode: 'Markdown' });
+        if (!userId) return Telegram.sendMessage(chatId, UI.notLinked);
         await Helpers.queueReply(userId, { content });
-        bot.sendMessage(chatId, `🛡️ **Guild Message Sent**\n"${content}"`, { parse_mode: 'Markdown' });
+        Telegram.sendMessage(chatId, `🛡️ **Guild Message Sent**\n"${content}"`);
     }
 };
 
@@ -169,24 +209,27 @@ const Actions = {
 // ==========================================
 module.exports = async (req, res) => {
     console.log("[WEBHOOK] Hit received!");
+
     try {
         const update = req.body;
+        console.log("[WEBHOOK] Body:", JSON.stringify(update).substring(0, 200));
 
         // Handle Callback Queries (Buttons)
         if (update.callback_query) {
+            console.log("[WEBHOOK] Processing Callback Query");
             const query = update.callback_query;
             const chatId = query.message.chat.id;
             const action = query.data;
             const msgId = query.message.message_id;
 
-            await bot.answerCallbackQuery(query.id);
+            await Telegram.answerCallbackQuery(query.id);
 
             if (action.startsWith('reply_context:')) {
                 const contextId = action.split(':')[1];
                 const permitString = await redis.get(`reply_permit:${chatId}:${contextId}`);
 
                 if (!permitString) {
-                    await bot.sendMessage(chatId, UI.replyExpired, { parse_mode: 'Markdown' });
+                    await Telegram.sendMessage(chatId, UI.replyExpired);
                 } else {
                     const permit = JSON.parse(permitString);
                     await redis.set(`active_reply:${chatId}`, JSON.stringify({
@@ -195,18 +238,17 @@ module.exports = async (req, res) => {
                         originalMsgId: msgId
                     }), 'EX', 300);
 
-                    await bot.sendMessage(chatId, `📝 **Replying to ${permit.target}...**\n\nPlease type your message now.`, {
-                        parse_mode: 'Markdown',
+                    await Telegram.sendMessage(chatId, `📝 **Replying to ${permit.target}...**\n\nPlease type your message now.`, {
                         reply_markup: { force_reply: true }
                     });
                 }
             } else {
                 switch (action) {
-                    case 'help': await bot.sendMessage(chatId, UI.help, { parse_mode: 'Markdown' }); break;
+                    case 'help': await Telegram.sendMessage(chatId, UI.help); break;
                     case 'status':
                         const userId = await Helpers.getUserId(chatId);
-                        if (userId) await bot.sendMessage(chatId, UI.status(userId), { parse_mode: 'Markdown', ...Keyboards.linkedMenu });
-                        else await bot.sendMessage(chatId, UI.notLinked, { parse_mode: 'Markdown', ...Keyboards.mainMenu });
+                        if (userId) await Telegram.sendMessage(chatId, UI.status(userId), { reply_markup: Keyboards.linkedMenu });
+                        else await Telegram.sendMessage(chatId, UI.notLinked, { reply_markup: Keyboards.mainMenu });
                         break;
                     case 'disconnect': await Actions.disconnectAccount(chatId); break;
                 }
@@ -215,23 +257,26 @@ module.exports = async (req, res) => {
 
         // Handle Messages
         else if (update.message) {
+            console.log("[WEBHOOK] Processing Message");
             const msg = update.message;
             const chatId = msg.chat.id;
             const text = msg.text || "";
 
+            console.log(`[WEBHOOK] Chat: ${chatId}, Text: ${text}`);
+
             if (text.startsWith('/')) {
-                // Commands
+                console.log("[WEBHOOK] Command detected");
                 if (text.startsWith('/start')) {
                     const match = text.match(/\/start(?: (.+))?/);
                     const linkId = match && match[1] ? match[1].trim() : null;
-                    const existingUserId = await Helpers.getUserId(chatId);
 
+                    const existingUserId = await Helpers.getUserId(chatId);
                     if (existingUserId) {
-                        await bot.sendMessage(chatId, UI.status(existingUserId), { parse_mode: 'Markdown', ...Keyboards.linkedMenu });
+                        await Telegram.sendMessage(chatId, UI.status(existingUserId), { reply_markup: Keyboards.linkedMenu });
                     } else if (linkId) {
                         await Actions.linkAccount(chatId, linkId);
                     } else {
-                        await bot.sendMessage(chatId, UI.welcome(msg.from.first_name), { parse_mode: 'Markdown', ...Keyboards.mainMenu });
+                        await Telegram.sendMessage(chatId, UI.welcome(msg.from.first_name), { reply_markup: Keyboards.mainMenu });
                     }
                 }
                 else if (text.startsWith('/link')) {
@@ -243,15 +288,15 @@ module.exports = async (req, res) => {
                 }
                 else if (text.startsWith('/status')) {
                     const userId = await Helpers.getUserId(chatId);
-                    if (userId) await bot.sendMessage(chatId, UI.status(userId), { parse_mode: 'Markdown', ...Keyboards.linkedMenu });
-                    else await bot.sendMessage(chatId, UI.notLinked, { parse_mode: 'Markdown', ...Keyboards.mainMenu });
+                    if (userId) await Telegram.sendMessage(chatId, UI.status(userId), { reply_markup: Keyboards.linkedMenu });
+                    else await Telegram.sendMessage(chatId, UI.notLinked, { reply_markup: Keyboards.mainMenu });
                 }
                 else if (text.startsWith('/reply')) {
                     const match = text.match(/\/reply (.+)/);
                     if (match) {
                         const lastSender = await redis.get(`last_pm_sender:${chatId}`);
                         if (lastSender) await Actions.sendReply(chatId, lastSender, match[1].trim());
-                        else await bot.sendMessage(chatId, UI.noReplyContext, { parse_mode: 'Markdown' });
+                        else await Telegram.sendMessage(chatId, UI.noReplyContext);
                     }
                 }
                 else if (text.startsWith('/guild')) {
@@ -259,33 +304,37 @@ module.exports = async (req, res) => {
                     if (match) {
                         const lastSender = await redis.get(`last_guild_sender:${chatId}`);
                         if (lastSender) await Actions.sendGuildMessage(chatId, match[1].trim());
-                        else await bot.sendMessage(chatId, UI.noReplyContext, { parse_mode: 'Markdown' });
+                        else await Telegram.sendMessage(chatId, UI.noReplyContext);
                     }
                 }
             } else {
-                // Normal Text (Check for Active Reply)
+                console.log("[WEBHOOK] Normal text detected");
                 const activeReplyString = await redis.get(`active_reply:${chatId}`);
+
                 if (activeReplyString) {
+                    console.log("[WEBHOOK] Active reply session found");
                     const activeReply = JSON.parse(activeReplyString);
                     if (activeReply.type === 'PM') await Actions.sendReply(chatId, activeReply.target, text);
                     else if (activeReply.type === 'GUILD') await Actions.sendGuildMessage(chatId, text);
 
-                    // Update Original Button
                     try {
-                        await bot.editMessageReplyMarkup({
+                        await Telegram.editMessageReplyMarkup(chatId, activeReply.originalMsgId, {
                             inline_keyboard: [[{ text: "✅ Replied", callback_data: "noop" }]]
-                        }, { chat_id: chatId, message_id: activeReply.originalMsgId });
+                        });
                     } catch (e) { }
 
                     await redis.del(`active_reply:${chatId}`);
                     await redis.del(`reply_permit:${chatId}:${activeReply.originalMsgId}`);
+                } else {
+                    console.log("[WEBHOOK] No active reply session. Ignoring text.");
                 }
             }
         }
 
+        console.log("[WEBHOOK] Finished processing");
         res.status(200).send('OK');
     } catch (e) {
-        console.error("Webhook Error:", e);
-        res.status(500).send('Error');
+        console.error("[WEBHOOK] Error:", e);
+        res.status(200).send('Error');
     }
 };
