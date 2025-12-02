@@ -14,7 +14,7 @@ const CONFIG = {
 if (!CONFIG.TOKEN) throw new Error("TELEGRAM_BOT_TOKEN is missing");
 
 // Initialize Bot (No Polling for Serverless)
-const bot = new TelegramBot(CONFIG.TOKEN);
+const bot = new TelegramBot(CONFIG.TOKEN, { polling: false });
 
 // Initialize Redis
 const redis = new Redis(CONFIG.REDIS_URL, {
@@ -168,6 +168,7 @@ const Actions = {
 //  WEBHOOK HANDLER
 // ==========================================
 module.exports = async (req, res) => {
+    console.log("[WEBHOOK] Hit received!");
     try {
         const update = req.body;
 
