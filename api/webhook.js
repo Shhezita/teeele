@@ -12,9 +12,13 @@ const CONFIG = {
 
 if (!CONFIG.TOKEN) throw new Error("TELEGRAM_BOT_TOKEN is missing");
 
-// Initialize Redis
+// Initialize Redis (Optimized for Serverless)
 const redis = new Redis(CONFIG.REDIS_URL, {
-    retryStrategy: (times) => Math.min(times * 50, 2000)
+    retryStrategy: (times) => Math.min(times * 50, 2000),
+    maxRetriesPerRequest: 3,
+    connectTimeout: 10000,
+    lazyConnect: true, // Don't connect until needed
+    family: 0 // Auto-detect IPv4/IPv6
 });
 
 redis.on('error', (err) => console.error('[REDIS] Error:', err));
