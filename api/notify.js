@@ -9,7 +9,7 @@ const CONFIG = {
 
 if (!CONFIG.TOKEN) throw new Error("TELEGRAM_BOT_TOKEN is missing");
 
-const bot = new TelegramBot(CONFIG.TOKEN);
+const bot = new TelegramBot(CONFIG.TOKEN, { polling: false });
 const redis = new Redis(CONFIG.REDIS_URL, {
     retryStrategy: (times) => Math.min(times * 50, 2000)
 });
@@ -22,11 +22,14 @@ const Helpers = {
 //  NOTIFICATION HANDLER (Server -> Bot)
 // ==========================================
 module.exports = async (req, res) => {
+    console.log("[NOTIFY] Hit received!");
+
     // Basic Auth (Optional but recommended: check a secret header)
     // if (req.headers['x-bot-secret'] !== process.env.BOT_SECRET) return res.status(401).send('Unauthorized');
 
     try {
         const { userId, text, chatId: payloadChatId } = req.body;
+        console.log(`[NOTIFY] Body: userId=${userId}, text=${text ? text.substring(0, 50) : 'null'}`);
 
         if (!userId || !text) return res.status(400).json({ error: "Missing userId or text" });
 
@@ -34,6 +37,7 @@ module.exports = async (req, res) => {
 
         // Lookup Chat ID
         const chatId = payloadChatId || await Helpers.getChatId(userId);
+        console.log(`[NOTIFY] Chat ID lookup: ${chatId}`);
 
         if (chatId) {
             let formattedText = text;
@@ -65,8 +69,9 @@ module.exports = async (req, res) => {
             const options = { parse_mode: 'Markdown' };
             if (replyMarkup) options.reply_markup = replyMarkup;
 
+            console.log(`[NOTIFY] Sending message to ${chatId}...`);
             await bot.sendMessage(chatId, formattedText, options);
-            console.log(`[NOTIFY] Sent to User ${userId}`);
+            console.log(`[NOTIFY] Sent successfully to User ${userId}`);
 
             res.json({ success: true });
         } else {
